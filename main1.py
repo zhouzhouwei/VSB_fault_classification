@@ -5,12 +5,6 @@ Created on Tue Mar 12 18:28:31 2019
 @author: Administrator
 """
 
-# -*- coding: utf-8 -*-
-"""
-Created on Fri Mar  1 16:03:24 2019
-
-@author: kevin
-"""
 
 # add correlation coeffients into features 
 import pandas as pd
@@ -177,9 +171,10 @@ def phases_corr(ts_three,n_dim=400):
     bucket_size = int(sample_size / n_dim)
     corr_phase =[]
     for i in range(0, sample_size, bucket_size):
-        ts_rerange = ts_three[i: i+bucket_size,:]
-        temp = np.corrcoef(ts_rerange)
-        corr_phase.append(np.asarray(temp[0,1],temp[0,2],temp[1,2]))
+        ts_rerange = ts_three.loc[i: i+bucket_size]
+        temp = ts_rerange.corr()
+        corr_phase.append(np.asarray([temp.iloc[0].iloc[1],temp.iloc[0].iloc[2],
+                                     temp.iloc[1].iloc[2]]))
     return np.asarray(corr_phase)
         
 # transform raw data 
@@ -190,18 +185,20 @@ def prep_data(start, end):
     y = []
     # using tdqm to evaluate processing time
     for id_measurement in tqdm(y_train.index.levels[0].unique()[int(start/3):int(end/3)]):
-        phase_correff = []
+        
         # for each phase of the signal
         for phase in [0,1,2]:
             X_signal = []
             signal_id, target = y_train.loc[id_measurement].loc[phase]
             y.append(target)
             if phase==0:
-                idx = [signal_id, signal_id+1, signal_id+2]
-                phase_correff.append(phases_corr(praq_train[str(idx)]))
-            X_signal.append(np.concatenate(transform_ts(praq_train[str(signal_id)]),
-                                           phase_correff))
+                phase_correff=phases_corr(praq_train[[str(signal_id),
+                                                             str(signal_id+1),str(signal_id+2)]] )
+            X_signal.append(np.concatenate([transform_ts(praq_train[str(signal_id)]),
+                                            phase_correff], axis=1))
             X_signal = np.concatenate(X_signal, axis=1)
+            #X_signal = transform_ts(praq_train[str(signal_id)])
+            #X_signal = np.concatenate([X_signal,phase_correff], axis=1)
             X.append(X_signal)
         # concatenate all the 3 phases in one matrix
         # X_signal = np.concatenate(X_signal, axis=1)
