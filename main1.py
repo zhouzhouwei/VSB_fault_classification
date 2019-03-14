@@ -11,8 +11,9 @@ import pandas as pd
 import pyarrow.parquet as pq
 import os
 import tensorflow as tf
-# import matplotlib.pyplot as plt
+import matplotlib.pyplot as plt
 import numpy as np
+import pywt 
 from scipy import stats
 from tqdm import tqdm 
 from keras.layers import * # Keras is the most friendly Neural Network library, this Kernel use a lot of layers classes
@@ -132,6 +133,11 @@ class Attention(Layer):
     def compute_output_shape(self, input_shape):
         return input_shape[0],  self.features_dim
 
+def denoise_signal(ts):
+    cA , cD = pywt.dwt(ts,'db4','sym') 
+    ts_new = pywt.idwt(cA,None,'db4')
+    return ts_new
+    
 min_num = -128 
 max_num = 127
 # This function standardize the data from (-128 to 127) to (-1 to 1)
@@ -144,26 +150,24 @@ def min_max_transf(ts, min_data, max_data, range_needed=(-1,1)):
 def transform_ts(ts, n_dim=400):
     # convert int8 into int 64
     ts = ts.astype('int64')
-    ts_standardized = min_max_transf(ts, min_data=min_num, max_data=max_num)
-    #print(ts_standardized[0:10])
+    # ts_standardized = min_max_transf(ts, min_data=min_num, max_data=max_num)
+    # print(ts_standardized[0:10])
     bucket_size = int(sample_size / n_dim)
     ts_new = []
     for i in range(0, sample_size, bucket_size):
-        ts_rerange = ts_standardized[i: i+bucket_size]
-        labels,counts = np.unique(ts_rerange,return_counts=True)
-        ShanEntropy = stats.entropy(counts,base=10)
+        ts_rerange = ts[i: i+bucket_size]
+        ts_temp = pd.Series(denoise_signal(ts_rerange))
+        ts_rerange = min_max_transf(ts_temp, min_data=min_num, max_data=max_num)
         mean = ts_rerange.mean()
         std = ts_rerange.std()
         max_val = mean + std 
         min_val = mean - std 
         mad = ts_rerange.mad()
-        mode_series = stats.mode(ts_rerange)[0][0]
-        mode = float(mode_series)
         skew = ts_rerange.skew()
-        kurtosis = ts_rerange.kurt() - 3
+        kurtosis = ts_rerange.kurt() 
         percentil_calc = np.percentile(ts_rerange,[10,25,50,75,90])
         perdis = percentil_calc[-1]-percentil_calc[0]
-        ts_new.append(np.concatenate([np.asarray([max_val,min_val,mean,std,mad,mode,perdis,skew,ShanEntropy,kurtosis]),
+        ts_new.append(np.concatenate([np.asarray([max_val,min_val,mean,std,mad,perdis,skew,kurtosis]),
                                       percentil_calc]))
     return np.asarray(ts_new)
 
@@ -224,8 +228,8 @@ X = np.concatenate(X)
 y = np.concatenate(y)
 print(X.shape, y.shape)
 # save data into file, a numpy specific format
-np.save("X.npy",X)
-np.save("y.npy",y)
+np.save("X_new.npy",X)
+np.save("y_new.npy",y)
 # load training data 
 # X = np.load('X.npy')
 # y = np.load('y.npy')
@@ -235,7 +239,7 @@ def model_lstm(input_shape):
     inp = Input(shape=(input_shape[1], input_shape[2],))
     # This is the LSTM layer
     # x = Bidirectional(CuDNNLSTM(128, return_sequences=True))(inp)
-    x = CuDNNLSTM(32, return_sequences=True)(inp)
+    x = CuDNNLSTM(64, return_sequences=True)(inp)
     # The second LSTM layer
     # x = Bidirectional(CuDNNLSTM(32, return_sequences=True))(x)
     x = CuDNNLSTM(32, return_sequences=True)(x)
@@ -327,7 +331,7 @@ for start, end in start_end:
 # X_test_input = np.asarray([np.concatenate([X_test[i][3],X_test[i+1][3], 
 #                                X_test[i+2][3]], axis=1) for i in range(0,len(X_test), 3)])
 X_test_input = np.asarray([np.concatenate([X_test[i][3]],axis=1) for i in range(0,len(X_test))])
-np.save("X_test.npy",X_test_input)
+np.save("X_test_new.npy",X_test_input)
 X_test_input.shape
 
 # load submission sample 
@@ -340,42 +344,12 @@ preds_test = []
 for i in range(N_Splits):
     model.load_weights('weights_{}.h5'.format(i))
     pred = model.predict(X_test_input, batch_size=300, verbose=1)
-    preds_test.append(pred)
- 
+    preds_test.append(pred) 
 preds_test = (np.squeeze(np.mean(preds_test, axis=0)) > best_threshold).astype(np.int)
 preds_test.shape
 print('the predicted positive samples are ', preds_test.sum())   
 preds_test_Data = pd.DataFrame(data=preds_test)
 preds_test_Data.to_csv('preds_test.csv') 
-
-#correct the predicted values based on phase-correction 
-phase_corr_data = pd.DataFrame(data = phase_corr) 
-phase_corr_data.to_csv('phase_corr.csv')
-phase_corr_abs = phase_corr_data.abs()  
-mean_corr = phase_corr_abs.mean()
-std_corr = phase_corr_abs.std()
-pred_pos = preds_test_Data[preds_test_Data[0] ==1]
-predpos_index = pred_pos.index 
-preds_test_new = preds_test
-for i in range(len(predpos_index)):
-    if predpos_index[i]%3 ==0 :
-        idx = [predpos_index[i],predpos_index[i]+1,predpos_index[i]+2]
-        three_phase_corr = phase_corr_abs.loc[idx]
-        if (np.abs(three_phase_corr.mean())>np.abs(mean_corr.values-std_corr.values)).bool():
-            preds_test_new[idx]=1
-    elif predpos_index[i]%3 ==1 :
-        idx = [predpos_index[i]-1, predpos_index[i], predpos_index[i]+1]
-        three_phase_corr = phase_corr_abs.loc[idx]
-        if (np.abs(three_phase_corr.mean())>np.abs(mean_corr.values-std_corr.values)).bool():
-            preds_test_new[idx]=1
-    else:
-        idx = [predpos_index[i]-2, predpos_index[i]-1, predpos_index[i]]
-        three_phase_corr = phase_corr_abs.loc[idx]
-        if (np.abs(three_phase_corr.mean())>np.abs(mean_corr.values-std_corr.values)).bool():
-            preds_test_new[idx]=1
-
-pos_samples = sum(preds_test_new) 
-print('the corrected positive samples are ', pos_samples)   
 
 # submission['target'] = preds_test
 submission['target'] = preds_test
